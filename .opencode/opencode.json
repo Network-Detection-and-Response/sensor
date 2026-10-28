@@ -1,0 +1,5 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "shell": "powershell",
+  "instructions": ["Opencode.md"]
+}
