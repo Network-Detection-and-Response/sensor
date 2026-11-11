@@ -34,6 +34,11 @@ public readonly struct MacAddress : IEquatable<MacAddress>
         return new MacAddress(bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5]);
     }
 
+    /// <summary>
+    /// Алиас <see cref="FromBytes"/> для парсера L2-заголовков. Без аллокаций и без дублирования логики.
+    /// </summary>
+    public static MacAddress FromSpan(ReadOnlySpan<byte> bytes) => FromBytes(bytes);
+
     public bool IsEmpty => (B0 | B1 | B2 | B3 | B4 | B5) == 0;
 
     public bool Equals(MacAddress other) =>

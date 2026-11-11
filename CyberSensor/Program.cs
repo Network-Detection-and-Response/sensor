@@ -4,6 +4,7 @@ using CyberSensor.Abstractions;
 using CyberSensor.Aggregation;
 using CyberSensor.Capture;
 using CyberSensor.Configuration;
+using CyberSensor.Diagnostics;
 using CyberSensor.Models;
 using CyberSensor.RateLimiting;
 using CyberSensor.Sending;
@@ -34,23 +35,28 @@ builder.Services.AddOptions<SensorOptions>()
     .ValidateDataAnnotations()
     .ValidateOnStart();
 
+// Общие счётчики конвейера (диагностика: вытеснение канала и пр.).
+builder.Services.AddSingleton<PipelineCounters>();
+
 // Producer-Consumer каналы (bounded) с опциями из конфигурации.
 builder.Services.AddSingleton(sp =>
 {
     var channels = sp.GetRequiredService<IOptions<SensorOptions>>().Value.Channels;
-    return Channel.CreateBounded<PacketMeta>(new BoundedChannelOptions(channels.PacketChannelCapacity)
+    var counters = sp.GetRequiredService<PipelineCounters>();
+    var options = new BoundedChannelOptions(channels.PacketChannelCapacity)
     {
-        FullMode = ToBoundedFullMode(channels.PacketChannelFullMode),
-        SingleReader = true,
-        SingleWriter = false,
-        AllowSynchronousContinuations = false,
-    });
+        FullMode = BoundedChannelFullMode.DropOldest,
+        SingleWriter = true,   // пишет только поток захвата
+        SingleReader = true,   // читает только AggregationWorker
+        AllowSynchronousContinuations = false, // consumer не выполняется на потоке захвата Npcap
+    };
+    return Channel.CreateBounded<ParsedPacket>(options, counters.OnChannelDrop);
 });
 
 builder.Services.AddSingleton(sp =>
 {
     var channels = sp.GetRequiredService<IOptions<SensorOptions>>().Value.Channels;
-    return Channel.CreateBounded<FlowRecord>(new BoundedChannelOptions(channels.FlowChannelCapacity)
+    return Channel.CreateBounded<CompletedFlow>(new BoundedChannelOptions(channels.FlowChannelCapacity)
     {
         FullMode = ToBoundedFullMode(channels.FlowChannelFullMode),
         SingleReader = true,
@@ -61,7 +67,7 @@ builder.Services.AddSingleton(sp =>
 
 builder.Services.AddSingleton<INetworkDeviceProvider, NetworkDeviceProvider>();
 builder.Services.AddSingleton<ICaptureService, PcapCaptureService>();
-builder.Services.AddSingleton<IPacketRateLimiter, TokenBucketPacketRateLimiter>();
+builder.Services.AddSingleton<IPacketRateLimiter, FastRateLimiter>();
 builder.Services.AddSingleton<IFlowAggregator, FlowAggregator>();
 
 builder.Services.AddSingleton<IValidateOptions<SensorOptions>, SensorOptionsValidator>();

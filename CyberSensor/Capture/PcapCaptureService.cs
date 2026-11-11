@@ -17,6 +17,7 @@ public sealed class PcapCaptureService : ICaptureService
 {
     private readonly ILogger<PcapCaptureService> _logger;
     private readonly INetworkDeviceProvider _deviceProvider;
+    private readonly IPacketRateLimiter _rateLimiter;
     private readonly SensorOptions _options;
     private readonly object _gate = new();
     private CancellationTokenSource? _cts;
@@ -26,17 +27,31 @@ public sealed class PcapCaptureService : ICaptureService
     /// <summary>Задержка после ошибки чтения драйвера (не-горячая ветка, R4).</summary>
     private const int ErrorBackoffMs = 100;
 
+    /// <summary>Интервал троттлинг-лога отдельного пакета (мс): ~5 раз/сек.</summary>
+    private const long PacketLogIntervalMs = 200;
+
+    /// <summary>Интервал сводной статистики (мс): раз в 5 секунд.</summary>
+    private const long StatsIntervalMs = 5000;
+
+    private long _totalPackets;
+    private long _parsedIpv4;
+    private long _droppedByRateLimiter;
+    private long _lastPacketLogTick;
+    private long _lastStatsTick;
+
     public PcapCaptureService(
         ILogger<PcapCaptureService> logger,
         INetworkDeviceProvider deviceProvider,
+        IPacketRateLimiter rateLimiter,
         IOptions<SensorOptions> options)
     {
         _logger = logger;
         _deviceProvider = deviceProvider;
+        _rateLimiter = rateLimiter;
         _options = options.Value;
     }
 
-    public Task StartAsync(ChannelWriter<PacketMeta> sink, CancellationToken ct)
+    public Task StartAsync(ChannelWriter<ParsedPacket> sink, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(sink);
 
@@ -111,7 +126,7 @@ public sealed class PcapCaptureService : ICaptureService
         cts?.Dispose();
     }
 
-    private void CaptureLoop(ChannelWriter<PacketMeta> sink, CancellationToken ct)
+    private void CaptureLoop(ChannelWriter<ParsedPacket> sink, CancellationToken ct)
     {
         // Флаг защищает от вызова Close() на устройстве, которое не удалось открыть (R3):
         // устанавливается ТОЛЬКО после успешного device.Open(...).
@@ -159,11 +174,32 @@ public sealed class PcapCaptureService : ICaptureService
                 {
                     // Zero-alloc: span напрямую указывает на буфер pcap, копирования данных нет.
                     ReadOnlySpan<byte> data = capture.Data;
+                    _totalPackets++;
 
-                    // TODO(шаг парсинга): PacketParser.TryParse(data, out PacketMeta meta)
-                    //                   → sink.TryWrite(meta) (без аллокаций).
-                    // На текущем шаге реальный разбор пакета в PacketMeta не выполняется.
-                    _ = data;
+                    // Timestamp в тиках .NET (1 тик = 100 нс) из PosixTimeval (unix epoch).
+                    long ticks = (long)capture.Header.Timeval.Seconds * TimeSpan.TicksPerSecond
+                                 + (long)capture.Header.Timeval.MicroSeconds * 10;
+
+                    if (!PacketParser.TryParse(data, ticks, out ParsedPacket packet))
+                    {
+                        continue; // не-IPv4/битые — молча пропускаем, без аллокаций.
+                    }
+
+                    _parsedIpv4++;
+
+                    // Копия (16 байт, на стеке) нужна, т.к. `in` нельзя взять от свойства record struct.
+                    IpAddr srcIp = packet.SrcIp;
+                    if (!_rateLimiter.IsAllowed(in srcIp))
+                    {
+                        _droppedByRateLimiter++;
+                        continue;
+                    }
+
+                    // Пишем разобранный пакет напрямую (zero-alloc), без промежуточного маппинга.
+                    sink.TryWrite(packet);
+
+                    LogPacketIfDue(packet);
+                    LogStatsIfDue();
                 }
                 else if (status == GetPacketStatus.Error)
                 {
@@ -208,6 +244,9 @@ public sealed class PcapCaptureService : ICaptureService
             {
                 CloseDevice(device);
             }
+
+            // Сигнализируем Consumer о завершении потока пакетов. TryComplete идемпотентен.
+            sink.TryComplete();
         }
     }
 
@@ -237,6 +276,93 @@ public sealed class PcapCaptureService : ICaptureService
         catch (Exception ex)
         {
             _logger.LogDebug(ex, "Close завершился с ошибкой (проигнорировано).");
+        }
+    }
+
+    /// <summary>
+    /// Троттлинг-лог отдельного пакета: не чаще ~5 раз/сек.
+    /// Строковые аллокации (ToString/interpolation) происходят только здесь, вне hot path.
+    /// </summary>
+    private void LogPacketIfDue(in ParsedPacket packet)
+    {
+        long now = Environment.TickCount64;
+        if (now - _lastPacketLogTick < PacketLogIntervalMs)
+        {
+            return;
+        }
+
+        _lastPacketLogTick = now;
+        _logger.LogInformation(
+            "{SrcMac} -> {SrcIp} -> {SrcPort} -> {Protocol} -> {Flags} -> {Bytes}",
+            packet.SrcMac.ToString(),
+            FormatIpv4(packet.SrcIp),
+            packet.SrcPort,
+            ProtocolName(packet.Protocol),
+            FormatTcpFlags(packet.TcpFlags),
+            packet.TotalBytes);
+    }
+
+    /// <summary>
+    /// Сводная статистика раз в <see cref="StatsIntervalMs"/>. Аллокации только здесь (не-горячая ветка).
+    /// </summary>
+    private void LogStatsIfDue()
+    {
+        long now = Environment.TickCount64;
+        if (now - _lastStatsTick < StatsIntervalMs)
+        {
+            return;
+        }
+
+        _lastStatsTick = now;
+        _logger.LogInformation(
+            "Всего пакетов: {Total} | Разобрано IPv4: {Ipv4} | Отброшено RateLimiter: {Dropped} | Память GC (МБ): {Mem}",
+            _totalPackets,
+            _parsedIpv4,
+            _droppedByRateLimiter,
+            GC.GetTotalMemory(false) / 1024 / 1024);
+    }
+
+    /// <summary>Форматирует IPv4 (младшие 32 бита Low) в dotted-quad. Только для веток логирования.</summary>
+    private static string FormatIpv4(IpAddr ip)
+    {
+        uint v = (uint)ip.Low;
+        return $"{(byte)(v >> 24)}.{(byte)(v >> 16)}.{(byte)(v >> 8)}.{(byte)v}";
+    }
+
+    /// <summary>Имя протокола для лога. Только для веток логирования.</summary>
+    private static string ProtocolName(byte protocol) => protocol switch
+    {
+        6 => "TCP",
+        17 => "UDP",
+        1 => "ICMP",
+        _ => protocol.ToString(),
+    };
+
+    /// <summary>Форматирует TCP-флаги в "[Ack Psh]" (или "[]" при отсутствии). Только для веток логирования.</summary>
+    private static string FormatTcpFlags(TcpFlags flags)
+    {
+        var sb = new System.Text.StringBuilder("[", 24);
+        Append(flags, TcpFlags.Fin, "Fin", sb);
+        Append(flags, TcpFlags.Syn, "Syn", sb);
+        Append(flags, TcpFlags.Rst, "Rst", sb);
+        Append(flags, TcpFlags.Psh, "Psh", sb);
+        Append(flags, TcpFlags.Ack, "Ack", sb);
+        Append(flags, TcpFlags.Urg, "Urg", sb);
+        Append(flags, TcpFlags.Ece, "Ece", sb);
+        Append(flags, TcpFlags.Cwr, "Cwr", sb);
+        return sb.Append(']').ToString();
+    }
+
+    private static void Append(TcpFlags flags, TcpFlags bit, string name, System.Text.StringBuilder sb)
+    {
+        if ((flags & bit) != 0)
+        {
+            if (sb.Length > 1)
+            {
+                sb.Append(' ');
+            }
+
+            sb.Append(name);
         }
     }
 }

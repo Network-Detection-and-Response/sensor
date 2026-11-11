@@ -42,7 +42,7 @@ public sealed class SensorOptions
 
 public sealed class RateLimiterOptions
 {
-    public RateLimiterMode Mode { get; set; } = RateLimiterMode.TokenBucket;
+    public RateLimiterMode Mode { get; set; } = RateLimiterMode.FixedWindow;
 
     [Range(1, int.MaxValue)]
     public int PermitsPerSecondPerSourceIp { get; set; } = 4000;
@@ -57,8 +57,9 @@ public sealed class RateLimiterOptions
 
 public enum RateLimiterMode
 {
-    TokenBucket = 0,
-    SlidingWindow = 1,
+    FixedWindow = 0,
+    TokenBucket = 1,
+    SlidingWindow = 2,
 }
 
 public sealed class AggregatorOptions
@@ -76,7 +77,7 @@ public sealed class AggregatorOptions
 public sealed class ChannelsOptions
 {
     [Range(1, int.MaxValue)]
-    public int PacketChannelCapacity { get; set; } = 65536;
+    public int PacketChannelCapacity { get; set; } = 50000;
 
     public ChannelFullMode PacketChannelFullMode { get; set; } = ChannelFullMode.DropOldest;
 

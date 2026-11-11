@@ -36,6 +36,15 @@ public readonly struct IpAddr : IEquatable<IpAddr>
         return new IpAddr(high, low);
     }
 
+    /// <summary>
+    /// Создаёт IpAddr из IPv4-адреса в сетевом порядке байт (big-endian) без аллокаций.
+    /// Кодирование — IPv4-mapped IPv6 (::ffff:a.b.c.d): High=0, младшие 32 бита Low = адрес.
+    /// </summary>
+    public static IpAddr FromIpv4(uint ipv4)
+    {
+        return new IpAddr(0, 0x0000FFFF00000000UL | ipv4);
+    }
+
     public bool IsEmpty => (High | Low) == 0;
 
     public bool Equals(IpAddr other) => High == other.High && Low == other.Low;

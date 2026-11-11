@@ -1,11 +1,14 @@
 namespace CyberSensor.Models;
 
-/// <summary>
-/// Ключ сессии (flow): 5-tuple без учёта направления.
-/// </summary>
+/// <summary>Ключ сессии (5-tuple), иммутабельный. IEquatable + быстрый GetHashCode генерируются автоматически.</summary>
 public readonly record struct FlowKey(
-    IpAddr SourceAddress,
-    IpAddr DestinationAddress,
-    ushort SourcePort,
-    ushort DestinationPort,
-    byte Protocol);
+    IpAddr SrcIp,
+    IpAddr DstIp,
+    ushort SrcPort,
+    ushort DstPort,
+    byte Protocol)   // 6=TCP, 17=UDP, 1=ICMP
+{
+    /// <summary>Извлекает ключ сессии из разобранного пакета (zero-alloc).</summary>
+    public static FlowKey FromPacket(in ParsedPacket packet) =>
+        new(packet.SrcIp, packet.DstIp, packet.SrcPort, packet.DstPort, packet.Protocol);
+}

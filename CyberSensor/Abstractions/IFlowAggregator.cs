@@ -8,9 +8,9 @@ namespace CyberSensor.Abstractions;
 /// </summary>
 public interface IFlowAggregator
 {
-    void Add(in PacketMeta packet);
+    void ProcessPacket(in ParsedPacket packet);
 
-    void FlushExpired(ChannelWriter<FlowRecord> sink, long nowUnixMs);
+    void FlushExpired(ChannelWriter<CompletedFlow> sink, long nowMs);
 
     int ActiveFlowCount { get; }
 

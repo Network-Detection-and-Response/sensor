@@ -7,18 +7,18 @@ using Microsoft.Extensions.Logging;
 namespace CyberSensor.Workers;
 
 /// <summary>
-/// Воркер перехвата трафика. Запускает цикл захвата и пишет метаданные пакетов в канал.
+/// Воркер перехвата трафика. Запускает цикл захвата и пишет разобранные пакеты в канал.
 /// </summary>
 public sealed class CaptureWorker : BackgroundService
 {
     private readonly ILogger<CaptureWorker> _logger;
     private readonly ICaptureService _captureService;
-    private readonly Channel<PacketMeta> _packetChannel;
+    private readonly Channel<ParsedPacket> _packetChannel;
 
     public CaptureWorker(
         ILogger<CaptureWorker> logger,
         ICaptureService captureService,
-        Channel<PacketMeta> packetChannel)
+        Channel<ParsedPacket> packetChannel)
     {
         _logger = logger;
         _captureService = captureService;
