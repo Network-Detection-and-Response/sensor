@@ -78,21 +78,6 @@ public sealed class ChannelsOptions
 {
     [Range(1, int.MaxValue)]
     public int PacketChannelCapacity { get; set; } = 50000;
-
-    public ChannelFullMode PacketChannelFullMode { get; set; } = ChannelFullMode.DropOldest;
-
-    [Range(1, int.MaxValue)]
-    public int FlowChannelCapacity { get; set; } = 16384;
-
-    public ChannelFullMode FlowChannelFullMode { get; set; } = ChannelFullMode.Wait;
-}
-
-public enum ChannelFullMode
-{
-    Wait = 0,
-    DropOldest = 1,
-    DropNewest = 2,
-    DropWrite = 3,
 }
 
 public sealed class BatchOptions
@@ -100,21 +85,19 @@ public sealed class BatchOptions
     [Range(1, 10_000)]
     public int MaxBatchSize { get; set; } = 500;
 
-    public TimeSpan FlushInterval { get; set; } = TimeSpan.FromSeconds(5);
+    public TimeSpan FlushInterval { get; set; } = TimeSpan.FromSeconds(3);
 }
 
 public sealed class BackendOptions
 {
     [Required(AllowEmptyStrings = false, ErrorMessage = "Backend.BaseUrl обязателен.")]
     [Url(ErrorMessage = "Backend.BaseUrl должен быть корректным абсолютным HTTP/HTTPS URL.")]
-    public string BaseUrl { get; set; } = "http://localhost:5000";
+    public string BaseUrl { get; set; } = "http://localhost:8080";
 
-    public string FlowsEndpoint { get; set; } = "/api/flows";
+    public string FlowsEndpoint { get; set; } = "/api/v1/flows";
 
+    [Required(AllowEmptyStrings = false, ErrorMessage = "Backend.ApiKey обязателен.")]
     public string? ApiKey { get; set; }
 
     public TimeSpan Timeout { get; set; } = TimeSpan.FromSeconds(10);
-
-    [Range(0, int.MaxValue)]
-    public int MaxRetries { get; set; } = 3;
 }

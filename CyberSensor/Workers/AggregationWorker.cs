@@ -16,17 +16,20 @@ public sealed class AggregationWorker : BackgroundService
     private readonly ChannelReader<ParsedPacket> _packetReader;
     private readonly IFlowAggregator _flowAggregator;
     private readonly PipelineCounters _counters;
+    private readonly PipelineState _pipeline;
 
     public AggregationWorker(
         ILogger<AggregationWorker> logger,
         Channel<ParsedPacket> packetChannel,
         IFlowAggregator flowAggregator,
-        PipelineCounters counters)
+        PipelineCounters counters,
+        PipelineState pipeline)
     {
         _logger = logger;
         _packetReader = packetChannel.Reader;
         _flowAggregator = flowAggregator;
         _counters = counters;
+        _pipeline = pipeline;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -58,7 +61,16 @@ public sealed class AggregationWorker : BackgroundService
         {
             // штатная остановка
         }
-
-        _logger.LogInformation("AggregationWorker остановлен.");
+        finally
+        {
+            // Дочитываем остатки (могли остаться при отмене токена) — неблокирующе.
+            while (_packetReader.TryRead(out ParsedPacket packet))
+            {
+                _flowAggregator.ProcessPacket(in packet);
+            }
+            // Сигнализируем диспетчеру: агрегация завершена, можно делать DrainAll.
+            _pipeline.CompleteAggregation();
+            _logger.LogInformation("AggregationWorker остановлен.");
+        }
     }
 }

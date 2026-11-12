@@ -59,6 +59,15 @@ public readonly struct IpAddr : IEquatable<IpAddr>
 
     public override string ToString()
     {
+        // IPv4-mapped IPv6 (::ffff:a.b.c.d): High==0, старшие 32 бита Low == 0x0000FFFF.
+        // Возвращаем чистую IPv4-строку без префикса "::ffff:".
+        if (High == 0 && (Low >> 32) == 0x0000FFFF)
+        {
+            Span<byte> ipv4 = stackalloc byte[4];
+            BinaryPrimitives.WriteUInt32BigEndian(ipv4, (uint)Low);
+            return new IPAddress(ipv4).ToString();
+        }
+
         Span<byte> bytes = stackalloc byte[16];
         BinaryPrimitives.WriteUInt64BigEndian(bytes, High);
         BinaryPrimitives.WriteUInt64BigEndian(bytes[8..], Low);

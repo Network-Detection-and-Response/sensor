@@ -38,6 +38,9 @@ builder.Services.AddOptions<SensorOptions>()
 // Общие счётчики конвейера (диагностика: вытеснение канала и пр.).
 builder.Services.AddSingleton<PipelineCounters>();
 
+// Состояние конвейера: сигнал завершения агрегации для корректного финального drain.
+builder.Services.AddSingleton<PipelineState>();
+
 // Producer-Consumer каналы (bounded) с опциями из конфигурации.
 builder.Services.AddSingleton(sp =>
 {
@@ -51,18 +54,6 @@ builder.Services.AddSingleton(sp =>
         AllowSynchronousContinuations = false, // consumer не выполняется на потоке захвата Npcap
     };
     return Channel.CreateBounded<ParsedPacket>(options, counters.OnChannelDrop);
-});
-
-builder.Services.AddSingleton(sp =>
-{
-    var channels = sp.GetRequiredService<IOptions<SensorOptions>>().Value.Channels;
-    return Channel.CreateBounded<CompletedFlow>(new BoundedChannelOptions(channels.FlowChannelCapacity)
-    {
-        FullMode = ToBoundedFullMode(channels.FlowChannelFullMode),
-        SingleReader = true,
-        SingleWriter = false,
-        AllowSynchronousContinuations = false,
-    });
 });
 
 builder.Services.AddSingleton<INetworkDeviceProvider, NetworkDeviceProvider>();
@@ -80,14 +71,8 @@ builder.Services.AddHttpClient<IBatchSender, HttpBatchSender>((sp, client) =>
     client.BaseAddress = new Uri(backend.BaseUrl, UriKind.Absolute);
     client.Timeout = backend.Timeout;
 
-    // Имя заголовка API-ключа зафиксировано: "X-Api-Key".
-    if (!string.IsNullOrWhiteSpace(backend.ApiKey))
-    {
-        client.DefaultRequestHeaders.Add("X-Api-Key", backend.ApiKey);
-    }
-
-    // MaxRetries в HttpClient нативно не настраивается (IHttpClientFactory не даёт retry-политику).
-    // TODO(Шаг 1.3): реализовать ретраи в HttpBatchSender на основе Backend.MaxRetries.
+    // Имя заголовка API-ключа зафиксировано: "X-Sensor-API-Key".
+    client.DefaultRequestHeaders.Add("X-Sensor-API-Key", backend.ApiKey);
 });
 
 builder.Services.AddHostedService<CaptureWorker>();
@@ -97,11 +82,3 @@ builder.Services.AddHostedService<BatchDispatcherWorker>();
 var host = builder.Build();
 
 await host.RunAsync();
-
-static BoundedChannelFullMode ToBoundedFullMode(ChannelFullMode mode) => mode switch
-{
-    ChannelFullMode.DropOldest => BoundedChannelFullMode.DropOldest,
-    ChannelFullMode.DropNewest => BoundedChannelFullMode.DropNewest,
-    ChannelFullMode.DropWrite => BoundedChannelFullMode.DropWrite,
-    _ => BoundedChannelFullMode.Wait,
-};

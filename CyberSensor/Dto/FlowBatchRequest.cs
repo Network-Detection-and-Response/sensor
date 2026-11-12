@@ -1,3 +1,5 @@
+using System.Text.Json.Serialization;
+
 namespace CyberSensor.Dto;
 
 /// <summary>
@@ -5,11 +7,7 @@ namespace CyberSensor.Dto;
 /// </summary>
 public sealed record FlowBatchRequest
 {
-    public required string SensorId { get; init; }
-
-    public required string BatchId { get; init; }
-
-    public required long CapturedAt { get; init; }
-
-    public required IReadOnlyList<FlowDto> Flows { get; init; }
+    [JsonPropertyName("sensor_id")] public required string SensorId { get; init; }
+    [JsonPropertyName("timestamp")] public required string Timestamp { get; init; }
+    [JsonPropertyName("flows")] public required IReadOnlyList<FlowDto> Flows { get; init; }
 }

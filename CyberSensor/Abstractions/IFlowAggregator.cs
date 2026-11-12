@@ -1,16 +1,18 @@
-using System.Threading.Channels;
 using CyberSensor.Models;
 
 namespace CyberSensor.Abstractions;
 
 /// <summary>
 /// Агрегирует пакеты в сессии (flows) по ключу 5-tuple.
+/// Выгрузка сессий производится заполнением переданного списка (без промежуточного канала).
 /// </summary>
 public interface IFlowAggregator
 {
     void ProcessPacket(in ParsedPacket packet);
 
-    void FlushExpired(ChannelWriter<CompletedFlow> sink, long nowMs);
+    int FlushExpired(long nowMs, List<CompletedFlow> into);
+
+    int DrainAll(List<CompletedFlow> into);
 
     int ActiveFlowCount { get; }
 

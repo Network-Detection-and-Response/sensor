@@ -1,4 +1,3 @@
-using System.Threading.Channels;
 using CyberSensor.Abstractions;
 using CyberSensor.Configuration;
 using CyberSensor.Models;
@@ -14,16 +13,22 @@ public sealed class FlowAggregator : IFlowAggregator
 {
     private readonly ILogger<FlowAggregator> _logger;
     private readonly FlowTable _table;
+    private readonly long _idleTimeoutMs;
+    private readonly long _activeTimeoutMs;
+    private long _totalFlowsEmitted;
 
     public FlowAggregator(ILogger<FlowAggregator> logger, IOptions<SensorOptions> options)
     {
         _logger = logger;
-        _table = new FlowTable(options.Value.Aggregator.FlowTableCapacity);
+        var aggregator = options.Value.Aggregator;
+        _table = new FlowTable(aggregator.FlowTableCapacity);
+        _idleTimeoutMs = (long)aggregator.FlowIdleTimeout.TotalMilliseconds;
+        _activeTimeoutMs = (long)aggregator.FlowHardTimeout.TotalMilliseconds;
     }
 
     public int ActiveFlowCount => _table.Count;
 
-    public long TotalFlowsEmitted => 0;
+    public long TotalFlowsEmitted => Interlocked.Read(ref _totalFlowsEmitted);
 
     public void ProcessPacket(in ParsedPacket packet)
     {
@@ -31,10 +36,19 @@ public sealed class FlowAggregator : IFlowAggregator
         _table.Process(in packet, timestampMs);
     }
 
-    public void FlushExpired(ChannelWriter<CompletedFlow> sink, long nowMs)
+    public int FlushExpired(long nowMs, List<CompletedFlow> into)
     {
-        // TODO(Шаг 2.3): логика экспирации по FlowIdleTimeout/FlowHardTimeout.
-        _logger.LogWarning("FlowAggregator.FlushExpired is not implemented yet (Шаг 2.3).");
-        throw new NotImplementedException();
+        into.Clear();
+        _table.RemoveExpired(nowMs, _idleTimeoutMs, _activeTimeoutMs, into);
+        Interlocked.Add(ref _totalFlowsEmitted, into.Count);
+        return into.Count;
+    }
+
+    public int DrainAll(List<CompletedFlow> into)
+    {
+        into.Clear();
+        _table.DrainAll(into);
+        Interlocked.Add(ref _totalFlowsEmitted, into.Count);
+        return into.Count;
     }
 }

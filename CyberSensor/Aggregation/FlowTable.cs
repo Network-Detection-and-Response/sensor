@@ -46,10 +46,35 @@ internal sealed class FlowTable
         }
     }
 
-    /// <summary>Заготовка для Шага 2.3: вытеснение истёкших сессий в список на экспорт.</summary>
-    public void RemoveExpired(long nowMs, List<CompletedFlow> into)
+    /// <summary>
+    /// Вытесняет истёкшие сессии (idle/hard timeout либо TCP RST) в список на экспорт.
+    /// </summary>
+    public void RemoveExpired(long nowMs, long idleTimeoutMs, long activeTimeoutMs, List<CompletedFlow> into)
     {
-        // TODO(Шаг 2.3): обход _flows, сравнение LastSeenMs/FirstSeenMs с nowMs,
-        // удаление истёкших сессий и заполнение `into` (без аллокаций на каждый flow).
+        lock (_lock)
+        {
+            foreach (KeyValuePair<FlowKey, FlowMetrics> kv in _flows)
+            {
+                FlowMetrics m = kv.Value;
+                bool expired = (nowMs - m.LastSeenMs >= idleTimeoutMs)
+                            || (nowMs - m.FirstSeenMs >= activeTimeoutMs)
+                            || (m.RstCount > 0);
+                if (expired) into.Add(new CompletedFlow(kv.Key, m));
+            }
+
+            // удаляем после обхода (нельзя модифицировать словарь во время перечисления)
+            foreach (CompletedFlow flow in into) _flows.Remove(flow.Key);
+        }
+    }
+
+    /// <summary>Выгружает все оставшиеся сессии (финальный drain при остановке).</summary>
+    public void DrainAll(List<CompletedFlow> into)
+    {
+        lock (_lock)
+        {
+            foreach (KeyValuePair<FlowKey, FlowMetrics> kv in _flows)
+                into.Add(new CompletedFlow(kv.Key, kv.Value));
+            _flows.Clear();
+        }
     }
 }
