@@ -12,7 +12,8 @@ namespace CyberSensor.Sending;
 
 /// <summary>
 /// Отправка батчей flow-записей на бэкенд по HTTP (POST /api/v1/flows).
-/// Никогда не бросает исключений на сбоях бэкенда — сенсор не останавливается.
+/// Не бросает исключений на сбоях бэкенда — сенсор не останавливается.
+/// При отмене <see cref="CancellationToken"/> перевыбрасывает <see cref="OperationCanceledException"/>.
 /// </summary>
 public sealed class HttpBatchSender : IBatchSender
 {
@@ -54,7 +55,9 @@ public sealed class HttpBatchSender : IBatchSender
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
-            // штатная остановка — не считаем ошибкой отправки
+            // Перевыбрасываем отмену: вызывающий код должен отличать штатную остановку
+            // (stoppingToken) от таймаута финального сброса (finalCts). Это НЕ сбой бэкенда.
+            throw;
         }
         catch (HttpRequestException ex)
         {

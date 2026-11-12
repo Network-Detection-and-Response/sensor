@@ -70,7 +70,14 @@ public sealed class BatchDispatcherWorker : BackgroundService
         {
             // Ждём, пока AggregationWorker дочитает все пакеты (иначе DrainAll недосчитается
             // сессий, добавленных конкурентно при параллельной остановке hosted-сервисов).
-            await _pipeline.AggregationCompleted.ConfigureAwait(false);
+            try
+            {
+                await _pipeline.AggregationCompleted.WaitAsync(TimeSpan.FromSeconds(10)).ConfigureAwait(false);
+            }
+            catch (TimeoutException)
+            {
+                _logger.LogWarning("Таймаут ожидания завершения агрегации — выполняем DrainAll без полной гарантии.");
+            }
 
             _flowAggregator.DrainAll(_buffer);
             if (_buffer.Count > 0)

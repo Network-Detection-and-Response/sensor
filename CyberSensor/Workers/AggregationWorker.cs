@@ -63,13 +63,24 @@ public sealed class AggregationWorker : BackgroundService
         }
         finally
         {
-            // Дочитываем остатки (могли остаться при отмене токена) — неблокирующе.
-            while (_packetReader.TryRead(out ParsedPacket packet))
+            try
             {
-                _flowAggregator.ProcessPacket(in packet);
+                // Дочитываем до ЗАВЕРШЕНИЯ канала (TryComplete от захвата), а не до временной
+                // пустоты: иначе потеряем последний in-flight пакет, дописанный после отмены токена.
+                while (await _packetReader.WaitToReadAsync(CancellationToken.None).ConfigureAwait(false))
+                {
+                    while (_packetReader.TryRead(out ParsedPacket packet))
+                    {
+                        _flowAggregator.ProcessPacket(in packet);
+                    }
+                }
             }
-            // Сигнализируем диспетчеру: агрегация завершена, можно делать DrainAll.
-            _pipeline.CompleteAggregation();
+            finally
+            {
+                // Гарантированно сигнализируем (даже при исключении в дочите),
+                // чтобы BatchDispatcherWorker не завис в ожидании.
+                _pipeline.CompleteAggregation();
+            }
             _logger.LogInformation("AggregationWorker остановлен.");
         }
     }
