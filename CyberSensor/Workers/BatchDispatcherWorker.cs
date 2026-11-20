@@ -19,6 +19,7 @@ public sealed class BatchDispatcherWorker : BackgroundService
 {
     private readonly ILogger<BatchDispatcherWorker> _logger;
     private readonly IFlowAggregator _flowAggregator;
+    private readonly IDroppedFloodAggregator _droppedFloodAggregator;
     private readonly IBatchSender _batchSender;
     private readonly PipelineCounters _counters;
     private readonly PipelineState _pipeline;
@@ -30,6 +31,7 @@ public sealed class BatchDispatcherWorker : BackgroundService
     public BatchDispatcherWorker(
         ILogger<BatchDispatcherWorker> logger,
         IFlowAggregator flowAggregator,
+        IDroppedFloodAggregator droppedFloodAggregator,
         IBatchSender batchSender,
         PipelineCounters counters,
         PipelineState pipeline,
@@ -37,6 +39,7 @@ public sealed class BatchDispatcherWorker : BackgroundService
     {
         _logger = logger;
         _flowAggregator = flowAggregator;
+        _droppedFloodAggregator = droppedFloodAggregator;
         _batchSender = batchSender;
         _counters = counters;
         _pipeline = pipeline;
@@ -55,10 +58,20 @@ public sealed class BatchDispatcherWorker : BackgroundService
             {
                 long nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
                 int flushed = _flowAggregator.FlushExpired(nowMs, _buffer);
-                if (flushed > 0)
+                int dropped = _droppedFloodAggregator.DrainSummaries(_buffer);
+
+                if (flushed + dropped > 0)
                 {
                     await SendBufferAsync(stoppingToken).ConfigureAwait(false);
                     _buffer.Clear();
+                }
+
+                if (dropped > 0)
+                {
+                    _counters.AddDroppedSummariesSent(dropped);
+                    _logger.LogWarning(
+                        "Заблокированный флуд за окно: {Sources} источников (сводок). Отброшено пакетов всего: {Dropped}.",
+                        dropped, _counters.RateLimited);
                 }
                 _logger.LogInformation(
                     "Сброс: выгружено {Flushed} | Отправлено батчей {SentBatches} / flows {SentFlows} | Ошибок {FailedBatches}",
@@ -80,6 +93,7 @@ public sealed class BatchDispatcherWorker : BackgroundService
             }
 
             _flowAggregator.DrainAll(_buffer);
+            _droppedFloodAggregator.DrainSummaries(_buffer);
             if (_buffer.Count > 0)
             {
                 using var finalCts = new CancellationTokenSource(TimeSpan.FromSeconds(5));

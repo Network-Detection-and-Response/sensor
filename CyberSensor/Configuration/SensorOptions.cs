@@ -29,6 +29,9 @@ public sealed class SensorOptions
     [Range(1, int.MaxValue)]
     public int ReadTimeoutMilliseconds { get; set; } = 1000;
 
+    /// <summary>Логировать отдельные пакеты (троттлинг ~5/с). Только для отладки парсера; по умолчанию выключено.</summary>
+    public bool LogPacketDetail { get; set; }
+
     public RateLimiterOptions RateLimiter { get; set; } = new();
 
     public AggregatorOptions Aggregator { get; set; } = new();
@@ -42,24 +45,13 @@ public sealed class SensorOptions
 
 public sealed class RateLimiterOptions
 {
-    public RateLimiterMode Mode { get; set; } = RateLimiterMode.FixedWindow;
+    [Range(1, int.MaxValue)]
+    public int MaxPacketsPerSecondPerIp { get; set; } = 3000;
 
     [Range(1, int.MaxValue)]
-    public int PermitsPerSecondPerSourceIp { get; set; } = 4000;
+    public int MaxTrackedIps { get; set; } = 65536;
 
-    [Range(1, int.MaxValue)]
-    public int BurstPerSourceIp { get; set; } = 4000;
-
-    /// <summary>Глобальный лимит пакетов/с (0 — без ограничения).</summary>
-    [Range(0, int.MaxValue)]
-    public int GlobalPermitsPerSecond { get; set; } = 0;
-}
-
-public enum RateLimiterMode
-{
-    FixedWindow = 0,
-    TokenBucket = 1,
-    SlidingWindow = 2,
+    public bool RateLimiterEnabled { get; set; } = true;
 }
 
 public sealed class AggregatorOptions

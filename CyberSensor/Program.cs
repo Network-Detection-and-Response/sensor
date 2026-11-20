@@ -1,4 +1,5 @@
 using System.Runtime;
+using System.Runtime.Versioning;
 using System.Threading.Channels;
 using CyberSensor.Abstractions;
 using CyberSensor.Aggregation;
@@ -12,23 +13,35 @@ using CyberSensor.Workers;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Hosting.WindowsServices;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.EventLog;
 using Microsoft.Extensions.Options;
 
 GCSettings.LatencyMode = GCLatencyMode.SustainedLowLatency;
 
-var builder = Host.CreateApplicationBuilder(new HostApplicationBuilderSettings
+var hostSettings = new HostApplicationBuilderSettings
 {
-    // Фиксируем content root на каталог сборки: там лежит appsettings*.json.
-    // Без этого `dotnet run --project` из родительского каталога искал бы конфигурацию
-    // в текущей рабочей директории и не находил бы её.
-    ContentRootPath = AppContext.BaseDirectory,
     Args = args,
-});
+    // ContentRootPath всегда на каталоге исполняемого файла:
+    //  - под Windows SCM рабочий каталог = C:\Windows\System32 (иначе конфиг не найдётся);
+    //  - при `dotnet run` из родительского каталога рабочий каталог ≠ каталогу сборки.
+    // Единый AppContext.BaseDirectory надёжнее условного IsWindowsService().
+    ContentRootPath = AppContext.BaseDirectory,
+};
+var builder = Host.CreateApplicationBuilder(hostSettings);
 
 builder.Services.AddWindowsService(options =>
 {
     options.ServiceName = "CyberSensor";
 });
+
+// EventLog подключаем только при запуске как служба Windows:
+// консольный запуск не должен писать в Журнал Windows.
+if (OperatingSystem.IsWindows() && WindowsServiceHelpers.IsWindowsService())
+{
+    ConfigureWindowsEventLog(builder.Logging);
+}
 
 builder.Services.AddOptions<SensorOptions>()
     .Bind(builder.Configuration.GetSection(SensorOptions.SectionName))
@@ -58,8 +71,10 @@ builder.Services.AddSingleton(sp =>
 
 builder.Services.AddSingleton<INetworkDeviceProvider, NetworkDeviceProvider>();
 builder.Services.AddSingleton<ICaptureService, PcapCaptureService>();
+builder.Services.AddSingleton<TimeProvider>(TimeProvider.System);
 builder.Services.AddSingleton<IPacketRateLimiter, FastRateLimiter>();
 builder.Services.AddSingleton<IFlowAggregator, FlowAggregator>();
+builder.Services.AddSingleton<IDroppedFloodAggregator, DroppedFloodAggregator>();
 
 builder.Services.AddSingleton<IValidateOptions<SensorOptions>, SensorOptionsValidator>();
 
@@ -82,3 +97,12 @@ builder.Services.AddHostedService<BatchDispatcherWorker>();
 var host = builder.Build();
 
 await host.RunAsync();
+
+// Выделено в локальную функцию с [SupportedOSPlatform("windows")]:
+// анализатор CA1416 не умеет переносить platform guard в тело лямбды,
+// поэтому настройку EventLog задаём объектом, а не лямбдой.
+[SupportedOSPlatform("windows")]
+static void ConfigureWindowsEventLog(ILoggingBuilder logging)
+{
+    logging.AddEventLog(new EventLogSettings { SourceName = "CyberSensor" });
+}

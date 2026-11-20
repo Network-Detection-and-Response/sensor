@@ -1,6 +1,7 @@
 using System.Threading.Channels;
 using CyberSensor.Abstractions;
 using CyberSensor.Configuration;
+using CyberSensor.Diagnostics;
 using CyberSensor.Models;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -18,6 +19,8 @@ public sealed class PcapCaptureService : ICaptureService
     private readonly ILogger<PcapCaptureService> _logger;
     private readonly INetworkDeviceProvider _deviceProvider;
     private readonly IPacketRateLimiter _rateLimiter;
+    private readonly IDroppedFloodAggregator _droppedFloodAggregator;
+    private readonly PipelineCounters _counters;
     private readonly SensorOptions _options;
     private readonly object _gate = new();
     private CancellationTokenSource? _cts;
@@ -33,21 +36,29 @@ public sealed class PcapCaptureService : ICaptureService
     /// <summary>Интервал сводной статистики (мс): раз в 5 секунд.</summary>
     private const long StatsIntervalMs = 5000;
 
+    /// <summary>Интервал троттлинг-предупреждения о DDoS-флуде (мс): не чаще 1 раза в 5 с.</summary>
+    private const long RateLimitWarningIntervalMs = 5000;
+
     private long _totalPackets;
     private long _parsedIpv4;
-    private long _droppedByRateLimiter;
     private long _lastPacketLogTick;
     private long _lastStatsTick;
+    private long _lastRateLimitWarningTick;
+    private long _lastRateLimitCount;
 
     public PcapCaptureService(
         ILogger<PcapCaptureService> logger,
         INetworkDeviceProvider deviceProvider,
         IPacketRateLimiter rateLimiter,
+        IDroppedFloodAggregator droppedFloodAggregator,
+        PipelineCounters counters,
         IOptions<SensorOptions> options)
     {
         _logger = logger;
         _deviceProvider = deviceProvider;
         _rateLimiter = rateLimiter;
+        _droppedFloodAggregator = droppedFloodAggregator;
+        _counters = counters;
         _options = options.Value;
     }
 
@@ -191,14 +202,20 @@ public sealed class PcapCaptureService : ICaptureService
                     IpAddr srcIp = packet.SrcIp;
                     if (!_rateLimiter.IsAllowed(in srcIp))
                     {
-                        _droppedByRateLimiter++;
+                        _counters.IncrementRateLimited();
+                        _droppedFloodAggregator.RecordDropped(in packet);
+                        LogRateLimitWarningIfDue();
                         continue;
                     }
 
                     // Пишем разобранный пакет напрямую (zero-alloc), без промежуточного маппинга.
                     sink.TryWrite(packet);
 
-                    LogPacketIfDue(packet);
+                    if (_options.LogPacketDetail)
+                    {
+                        LogPacketIfDue(packet);
+                    }
+
                     LogStatsIfDue();
                 }
                 else if (status == GetPacketStatus.Error)
@@ -318,8 +335,31 @@ public sealed class PcapCaptureService : ICaptureService
             "Всего пакетов: {Total} | Разобрано IPv4: {Ipv4} | Отброшено RateLimiter: {Dropped} | Память GC (МБ): {Mem}",
             _totalPackets,
             _parsedIpv4,
-            _droppedByRateLimiter,
+            _counters.RateLimited,
             GC.GetTotalMemory(false) / 1024 / 1024);
+    }
+
+    /// <summary>Предупреждение о DDoS-флуде не чаще 1 раза в 5 с (защита логгера от флуда).</summary>
+    private void LogRateLimitWarningIfDue()
+    {
+        long now = Environment.TickCount64;
+        if (now - _lastRateLimitWarningTick < RateLimitWarningIntervalMs)
+        {
+            return;
+        }
+
+        long total = _counters.RateLimited;
+        long sinceLast = total - _lastRateLimitCount;
+        _lastRateLimitWarningTick = now;
+        _lastRateLimitCount = total;
+
+        if (sinceLast > 0)
+        {
+            _logger.LogWarning(
+                "Обнаружен DDoS-флуд: за {Interval} с отброшено {Dropped} пакетов (rate limiter).",
+                RateLimitWarningIntervalMs / 1000,
+                sinceLast);
+        }
     }
 
     /// <summary>Форматирует IPv4 (младшие 32 бита Low) в dotted-quad. Только для веток логирования.</summary>

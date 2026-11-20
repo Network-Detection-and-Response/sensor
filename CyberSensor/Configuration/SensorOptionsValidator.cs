@@ -34,11 +34,6 @@ public sealed class SensorOptionsValidator : IValidateOptions<SensorOptions>
             errors.Add($"'{nameof(SensorOptions.Snaplen)}' должен быть >= 68.");
         }
 
-        if (options.RateLimiter.GlobalPermitsPerSecond < 0)
-        {
-            errors.Add($"'{nameof(SensorOptions.RateLimiter)}.{nameof(RateLimiterOptions.GlobalPermitsPerSecond)}' должен быть >= 0 (0 — без глобального ограничения).");
-        }
-
         return errors.Count == 0
             ? ValidateOptionsResult.Success
             : ValidateOptionsResult.Fail(errors);
